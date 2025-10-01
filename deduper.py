@@ -71,9 +71,10 @@ def save_posted(url: str, full_text: str):
         if t > cutoff
     ]
     if filtered:
-        posted_data["urls"], posted_data["timestamps"], posted_data["texts"] = zip(
-            *filtered
-        )
+        urls, timestamps, texts = zip(*filtered)
+        posted_data["urls"] = list(urls)
+        posted_data["timestamps"] = list(timestamps)
+        posted_data["texts"] = list(texts)
     else:
         posted_data["urls"], posted_data["timestamps"], posted_data["texts"] = (
             [],
