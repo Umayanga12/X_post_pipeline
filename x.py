@@ -1,6 +1,3 @@
-# x_client.py
-# This file handles the initialization of the X (Twitter) client.
-
 from typing import Optional
 import tweepy
 from config import logger, X_API_KEY, X_API_SECRET, X_ACCESS_TOKEN, X_ACCESS_SECRET
