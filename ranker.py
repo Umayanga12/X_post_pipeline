@@ -41,13 +41,13 @@ News items:
         for line in ranked_text.split("\n"):
             if line.strip() and any(ch.isalpha() for ch in line):
                 top3.append(line.strip())
-            if len(top3) >= 3:
+            if len(top3) >= 4:
                 break
 
         if not top3:
             raise ValueError("No valid ranked items extracted from LLM response")
 
-        return top3
+        return top3[1:]
 
     except Exception as e:
         logger.error(f"Ranking error: {e}")
