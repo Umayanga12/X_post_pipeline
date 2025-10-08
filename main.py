@@ -1,169 +1,107 @@
-import os
-import json
-import logging
-from datetime import datetime, timedelta
-from typing import List, Dict, Optional
-import feedparser
-import tweepy
-from dotenv import load_dotenv
-import hashlib
-from urllib.parse import urlparse, urlunparse
+import queue
+from apscheduler.schedulers.blocking import BlockingScheduler
+from apscheduler.triggers.cron import CronTrigger
+from config import logger, POST_QUEUE_SIZE, RSS_URLS, SCRAPE_BASE_URLS
+from fetcher import fetch_from_rss, scrape_articles, extract_article_content
+from deduper import is_duplicate, save_posted
+from ranker import Rank_News_Items
+from summarizer import summarize_article
+from post_generator import generate_post
+from poster import post_to_x
 
-# Config: Secure env vars and logging
-load_dotenv()
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-logger = logging.getLogger(__name__)
+# Queues
+article_queue = queue.Queue(maxsize=POST_QUEUE_SIZE)  # Queue for articles to process
+post_queue = queue.Queue(maxsize=POST_QUEUE_SIZE)  # Queue for ready posts
 
-class CryptoPoster:
-    def __init__(self):
-        self.client_id = os.getenv('X_CLIENT_ID')
-        self.client_secret = os.getenv('X_CLIENT_SECRET')
-        self.refresh_token = os.getenv('X_REFRESH_TOKEN')
-        self.posted_file = os.getenv('POSTED_FILE', 'posted.json')
-        self.client = self._init_twitter_client()
-        self.posted_data = self._load_posted()
 
-    def _init_twitter_client(self) -> Optional[tweepy.Client]:
-        """Initialize X client with OAuth 2.0."""
-        try:
-            auth = tweepy.OAuth2UserHandler(
-                client_id=self.client_id,
-                redirect_uri="http://localhost:3000",
-                scope=["tweet.read", "tweet.write", "users.read"],
-                client_secret=self.client_secret
-            )
-            auth.set_refresh_token(self.refresh_token)
-            access_token = auth.refresh_token()
-            return tweepy.Client(
-                access_token=access_token["access_token"],
-                wait_on_rate_limit=True
-            )
-        except Exception as e:
-            logger.error(f"Failed to init X client: {e}")
-            return None
+def pipeline_job():
+    logger.info("Running pipeline job...")
 
-    def _normalize_url(self, url: str) -> str:
-        """Strip query params and fragments for consistent URL matching."""
-        parsed = urlparse(url)
-        return urlunparse((parsed.scheme, parsed.netloc, parsed.path, '', '', ''))
+    # Step 1: Fetch articles
+    rss_articles = fetch_from_rss(RSS_URLS)
+    scraped_articles = scrape_articles(SCRAPE_BASE_URLS)
+    all_articles = rss_articles + scraped_articles
+    logger.info(
+        f"Fetched {len(all_articles)} total articles ({len(rss_articles)} RSS, {len(scraped_articles)} scraped)"
+    )
 
-    def _hash_content(self, title: str, snippet: str) -> str:
-        """Create a unique hash for article title + snippet."""
-        return hashlib.md5(f"{title}:{snippet}".encode()).hexdigest()
+    if not all_articles:
+        logger.info("No new articles found; skipping post.")
+        return
 
-    def _load_posted(self) -> Dict:
-        """Load posted data with error handling."""
-        try:
-            with open(self.posted_file, 'r') as f:
-                content = f.read().strip()
-                if not content:
-                    logger.warning("posted.json is empty; initializing new data")
-                    return {"urls": [], "hashes": [], "timestamps": []}
-                data = json.loads(content)
-                if not isinstance(data, dict):
-                    raise ValueError("Invalid JSON format")
-                return data
-        except (FileNotFoundError, json.JSONDecodeError, ValueError) as e:
-            logger.warning(f"Error loading posted data: {e}. Starting fresh.")
-            return {"urls": [], "hashes": [], "timestamps": []}
+    processed_count = 0
+    posted_count = 0
+    logger.info("processing aricals....")
+    # Step 2: Process articles
+    for article in all_articles:
+        full_text = article.get("full_text")
+        if not full_text:
+            extract_result = extract_article_content(article["link"])
+            if extract_result["success"]:
+                full_text = extract_result["text"]
+                article["full_text"] = full_text
+                article["snippet"] = extract_result["summary"]
+                logger.info(f"Extracted full text for: {article['title'][:50]}...")
+        logger.info("Handling duplicates....")
+        if full_text:
+            if is_duplicate(full_text):
+                logger.info(f"Skipping duplicate: {article['title'][:50]}...")
+                continue
+            if len(article["snippet"]) > 200:
+                article["snippet"] = summarize_article(full_text)
+            article_queue.put(article)
+            processed_count += 1
+            logger.info(f"Queued article: {article['title'][:50]}...")
 
-    def _save_posted(self, url: str, content_hash: str):
-        """Save URL, hash, and timestamp; prune old entries (>30 days)."""
-        try:
-            cutoff = (datetime.now() - timedelta(days=30)).timestamp()
-            self.posted_data['urls'] = [
-                u for u, t in zip(self.posted_data.get('urls', []), self.posted_data.get('timestamps', []))
-                if t > cutoff
-            ]
-            self.posted_data['hashes'] = [
-                h for h, t in zip(self.posted_data.get('hashes', []), self.posted_data.get('timestamps', []))
-                if t > cutoff
-            ]
-            self.posted_data['timestamps'] = [t for t in self.posted_data.get('timestamps', []) if t > cutoff]
+    logger.info(f"Processed {processed_count} unique articles")
 
-            self.posted_data.setdefault('urls', []).append(url)
-            self.posted_data.setdefault('hashes', []).append(content_hash)
-            self.posted_data.setdefault('timestamps', []).append(datetime.now().timestamp())
+    # Step 3: Rank articles
+    articles_to_rank = []
+    while not article_queue.empty():
+        articles_to_rank.append(article_queue.get())
+    ranked_articles = Rank_News_Items(articles_to_rank)
+    logger.info(f"Ranked {len(ranked_articles)} articles")
+    print(ranked_articles)
 
-            with open(self.posted_file, 'w') as f:
-                json.dump(self.posted_data, f, indent=2)
-        except Exception as e:
-            logger.error(f"Failed to save posted data: {e}")
+    # Step 4: Generate posts after ranking
+    generated_posts = []
+    for article in ranked_articles:
+        post = generate_post(article)
+        post_queue.put(post)
+        generated_posts.append(post)
+        logger.info(f"Generated post for: {post['text'][:50]}...")
 
-    def fetch_news(self, rss_urls: List[str], max_age_hours: int = 24) -> List[Dict]:
-        """Fetch articles, filter duplicates by URL and content hash."""
-        articles = []
-        cutoff = datetime.now() - timedelta(hours=max_age_hours)
-        posted_urls = set(self.posted_data.get('urls', []))
-        posted_hashes = set(self.posted_data.get('hashes', []))
+    print(generated_posts)
 
-        for url in rss_urls:
-            try:
-                feed = feedparser.parse(url, request_headers={'User-Agent': 'Mozilla/5.0'})
-                for entry in feed.entries[:5]:
-                    pub_date = datetime(*entry.published_parsed[:6]) if 'published_parsed' in entry else datetime.now()
-                    if pub_date <= cutoff:
-                        continue
-                    norm_url = self._normalize_url(entry.link)
-                    content_hash = self._hash_content(entry.title, entry.summary or '')
-                    if norm_url not in posted_urls and content_hash not in posted_hashes:
-                        articles.append({
-                            'title': entry.title,
-                            'link': entry.link,
-                            'snippet': (entry.summary or '')[:100] + '...' if entry.summary else '',
-                            'source': feed.feed.title,
-                            'norm_url': norm_url,
-                            'content_hash': content_hash
-                        })
-            except Exception as e:
-                logger.error(f"Error fetching {url}: {e}")
-        logger.info(f"Fetched {len(articles)} new articles")
-        return articles[:3]
-
-    def generate_post(self, article: Dict) -> str:
-        """Generate X post under 280 chars."""
-        post = f"{article['title']}\n\n{article['snippet']}\n\n{article['link']} #Crypto #Web3 #NFTs"
-        if len(post) > 280:
-            post = post[:277] + '...'
-        return post
-
-    def post_to_x(self, post_text: str) -> bool:
-        """Post with retry logic."""
-        if not self.client:
-            logger.error("No X client available")
-            return False
-        try:
-            logger.debug(f"Attempting to post: {post_text}")
-            response = self.client.create_tweet(text=post_text)
-            logger.info(f"Posted tweet ID: {response.data['id']}")
-            return True
-        except tweepy.TooManyRequests:
-            logger.warning("Rate limit hit; retry later")
-            return False
-        except tweepy.Forbidden as e:
-            logger.error(f"403 Forbidden: {e}. Check OAuth 2.0 permissions and refresh token")
-            return False
-        except Exception as e:
-            logger.error(f"Post failed: {e}")
-            return False
-
-    def run_pipeline(self, rss_urls: List[str]):
-        """Main orchestrator."""
-        articles = self.fetch_news(rss_urls)
-        if not articles:
-            logger.info("No new articles; skipping")
-            return
-        article = articles[0]
-        post_text = self.generate_post(article)
-        if self.post_to_x(post_text):
-            self._save_posted(article['norm_url'], article['content_hash'])
+    # Step 5: Post to X
+    for post in generated_posts:
+        if post_to_x(post):
+            save_posted(post["url"], post["full_text"])
+            posted_count += 1
+            logger.info(f"Successfully posted: {len(generated_posts)} total")
         else:
-            logger.error("Pipeline failed; manual check needed")
+            logger.error("Post failed - check logs above")
+
+    if posted_count == 0:
+        logger.warning("No posts sent - either no unique articles or posting errors")
+
 
 if __name__ == "__main__":
-    rss_urls = [
-        'https://cointelegraph.com/rss',
-        'https://nftlately.com/feed/'
-    ]
-    poster = CryptoPoster()
-    poster.run_pipeline(rss_urls)
+    scheduler = BlockingScheduler()
+
+    # Schedule the pipeline to run every hour
+    scheduler.add_job(
+        pipeline_job,
+        trigger=CronTrigger(hour="*", minute=0),  # Run at the start of every hour
+        id="pipeline_job",
+        max_instances=1,
+        replace_existing=True,
+    )
+    pipeline_job()
+    logger.info("Starting APScheduler for hourly pipeline execution...")
+    try:
+        scheduler.start()
+    except KeyboardInterrupt:
+        logger.info("Shutting down APScheduler...")
+        scheduler.shutdown()
+        logger.info("Pipeline stopped.")
