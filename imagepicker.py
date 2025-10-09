@@ -3,7 +3,7 @@ import random
 from config import IMAGE_FOLDER, KEYWORDS
 
 
-def pick_image(keywords: list[str]) -> str | None:
+def pick_image(keywords: list[str] = ["crypto"]) -> str | None:
     for kw in keywords:
         image_subfolder = os.path.join(IMAGE_FOLDER, kw.lower())
         if os.path.exists(image_subfolder):
