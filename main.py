@@ -71,6 +71,7 @@ def pipeline_job():
         generated_posts.append(post)
         logger.info(f"Generated post for: {post['text'][:50]}...")
 
+    print("=================================================")
     print(generated_posts)
 
     # Step 5: Post to X
