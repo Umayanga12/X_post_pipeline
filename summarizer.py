@@ -24,6 +24,7 @@ Your task:
 - Focus on *what matters most* — key insight, impact, or surprising fact.
 - If relevant, make it catchy, thought-provoking, or shareable.
 - Don't include hashtags, links, or emojis.
+- Wordcount should be between 50 and 100 words.
 
 Article:
 \"\"\"{article_text}\"\"\"
