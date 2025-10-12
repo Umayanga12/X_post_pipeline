@@ -7,7 +7,7 @@ def Rank_News_Items(news_items):
     Given a list of news items (dicts), ask LLM to rank and return top 3 dicts.
     """
     logger.info("Ranking news items...")
-
+    print(news_items)
     try:
         llm = ChatOllama(
             model="hf.co/bartowski/Llama-3.2-1B-Instruct-GGUF",
