@@ -1,0 +1,77 @@
+# Multi-stage production Dockerfile for crypto-news-pipe
+FROM python:3.11-slim as base
+
+# Install system dependencies
+RUN apt-get update && apt-get install -y \
+    curl \
+    wget \
+    ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+# Create app user
+RUN useradd --create-home --shell /bin/bash --uid 1000 app
+
+# Set working directory
+WORKDIR /app
+
+# Copy requirements first for better caching
+COPY requirements.txt .
+
+# Build stage - install dependencies
+FROM base as builder
+
+# Install build dependencies
+RUN apt-get update && apt-get install -y \
+    build-essential \
+    gcc \
+    g++ \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install Python dependencies
+RUN pip install --no-cache-dir --user -r requirements.txt
+
+# Production stage
+FROM base as production
+
+# Copy installed packages from builder
+COPY --from=builder /root/.local /home/app/.local
+
+# Copy application code
+COPY --chown=app:app . .
+
+# Switch to app user
+USER app
+
+# Set environment variables
+ENV PATH=/home/app/.local/bin:$PATH
+ENV PYTHONUNBUFFERED=1
+ENV PYTHONPATH=/app
+ENV PYTHONDONTWRITEBYTECODE=1
+
+# Create necessary directories
+RUN mkdir -p /app/data /app/logs && \
+    touch /app/data/posted.json
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
+    CMD python -c "import sys, os; sys.exit(0 if os.path.exists('/app/main.py') else 1)"
+
+# Default command
+CMD ["python", "main.py"]
+
+# Development stage
+FROM production as development
+
+USER root
+
+# Install development tools
+RUN pip install --no-cache-dir \
+    pytest \
+    black \
+    flake8 \
+    mypy
+
+USER app
+
+# Override for development
+CMD ["python", "main.py"]

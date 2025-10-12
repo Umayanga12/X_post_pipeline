@@ -3,26 +3,33 @@ version: "3.8"
 services:
   ollama:
     image: ollama/ollama:latest
-    container_name: ollama
+    container_name: ollama-prod
     ports:
       - "11434:11434"
     volumes:
       - ollama_data:/root/.ollama
     environment:
       - OLLAMA_MODEL=${OLLAMA_MODEL:-hf.co/bartowski/Llama-3.2-1B-Instruct-GGUF}
+      - OLLAMA_HOST=0.0.0.0
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:11434/api/tags"]
       interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 60s
+      timeout: 15s
+      retries: 5
+      start_period: 120s
     restart: unless-stopped
     networks:
       - crypto-news-network
+    deploy:
+      resources:
+        limits:
+          memory: 4G
+        reservations:
+          memory: 2G
     command: >
       bash -c "
         ollama serve &
-        sleep 10 &&
+        sleep 30 &&
         ollama pull ${OLLAMA_MODEL:-hf.co/bartowski/Llama-3.2-1B-Instruct-GGUF} &&
         wait
       "
@@ -31,10 +38,10 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    container_name: crypto-news-pipe
-    working_dir: /app
+      target: production
+    container_name: crypto-news-pipe-prod
     volumes:
-      - ./posted.json:/app/posted.json
+      - app_data:/app/data
       - ./image:/app/image:ro
     environment:
       - OLLAMA_BASE_URL=http://ollama:11434
@@ -44,8 +51,10 @@ services:
       - X_API_SECRET=${X_API_SECRET}
       - X_ACCESS_TOKEN=${X_ACCESS_TOKEN}
       - X_ACCESS_SECRET=${X_ACCESS_SECRET}
-      - POSTED_FILE=/app/posted.json
+      - POSTED_FILE=/app/data/posted.json
       - IMAGE_FOLDER=/app/image
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - ENVIRONMENT=production
     depends_on:
       ollama:
         condition: service_healthy
@@ -53,21 +62,34 @@ services:
     networks:
       - crypto-news-network
     healthcheck:
-      test: ["CMD", "python", "-c", "import sys; sys.exit(0)"]
+      test: ["CMD", "python", "-c", "import requests; requests.get('http://ollama:11434/api/tags', timeout=5)"]
       interval: 60s
-      timeout: 10s
+      timeout: 15s
       retries: 3
-      start_period: 30s
+      start_period: 60s
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+          cpus: '1.0'
+        reservations:
+          memory: 512M
+          cpus: '0.5'
     logging:
       driver: "json-file"
       options:
-        max-size: "10m"
-        max-file: "3"
+        max-size: "50m"
+        max-file: "5"
 
 volumes:
   ollama_data:
+    driver: local
+  app_data:
     driver: local
 
 networks:
   crypto-news-network:
     driver: bridge
+    ipam:
+      config:
+        - subnet: 172.20.0.0/16
