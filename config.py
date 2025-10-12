@@ -19,7 +19,7 @@ X_ACCESS_SECRET = os.getenv("X_ACCESS_SECRET")
 
 POSTED_FILE = os.getenv("POSTED_FILE", "posted.json")
 IMAGE_FOLDER = os.getenv(
-    "IMAGE_FOLDER", "images"
+    "IMAGE_FOLDER", "image"
 )  # Base folder for images, with subfolders like 'crypto', 'nft', etc.
 
 # RSS feeds and scrape URLs
