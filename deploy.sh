@@ -103,13 +103,13 @@ deploy_dev() {
     check_dependencies
 
     # Build and start services
-    docker-compose -f $DEV_COMPOSE down --remove-orphans
-    docker-compose -f $DEV_COMPOSE build
-    docker-compose -f $DEV_COMPOSE up -d
+    docker compose -f $DEV_COMPOSE down --remove-orphans
+    docker compose -f $DEV_COMPOSE build
+    docker compose -f $DEV_COMPOSE up -d
 
     log_success "Development deployment complete"
     log_info "Services started:"
-    docker-compose -f $DEV_COMPOSE ps
+    docker compose -f $DEV_COMPOSE ps
 }
 
 # Deploy for production
